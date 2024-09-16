@@ -129,7 +129,7 @@ class ExcelExtractor:
             
             self.console.print(table)
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.option('--directory', type=click.Path(exists=True), help='Directory containing Excel files')
 @click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO', help='Set the logging level')
@@ -146,10 +146,24 @@ def cli(ctx, directory, index_dir, log_level):
         handlers=[RichHandler(rich_tracebacks=True)]
     )
 
+    if ctx.invoked_subcommand is None:
+        if directory is None:
+            console = Console()
+            console.print("[bold red]Error:[/bold red] --directory option is required when no command is specified.")
+            console.print("Please provide the directory containing Excel files using the --directory option.")
+            console.print("For more information, use the --help option.")
+            ctx.exit(1)
+        ctx.invoke(process)
+
 @cli.command()
 @click.pass_context
 def process(ctx):
     """Process Excel files and create search index"""
+    if ctx.obj['directory'] is None:
+        click.echo("Error: --directory option is required for the process command.")
+        click.echo("Please provide the directory containing Excel files using the --directory option.")
+        ctx.exit(1)
+    
     extractor = ExcelExtractor(ctx.obj['directory'], ctx.obj['index_dir'])
     workbooks = extractor.process_directory()
     extractor.index_content(workbooks)
