@@ -1,10 +1,11 @@
 import os
 import logging
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import click
 import openpyxl
+import xlrd
 from openpyxl_image_loader import SheetImageLoader
 import pytesseract
 from PIL import Image
@@ -25,6 +26,7 @@ class SheetContent:
 @dataclass
 class WorkbookContent:
     filename: str
+    relative_path: str
     sheets: List[SheetContent]
 
 class ExcelExtractor:
@@ -33,56 +35,109 @@ class ExcelExtractor:
         self.index_dir = index_dir
         self.schema = Schema(
             filename=ID(stored=True),
+            relative_path=ID(stored=True),
             sheet_name=ID(stored=True),
             content=TEXT(stored=True)
         )
         self.console = Console()
 
-    def extract_text_from_sheet(self, sheet: openpyxl.worksheet.worksheet.Worksheet) -> str:
+    def extract_text_from_sheet(self, sheet, is_xlsx: bool) -> str:
         text = []
-        for row in sheet.iter_rows(values_only=True):
-            text.append('\t'.join(str(cell) if cell is not None else '' for cell in row))
+        if is_xlsx:
+            for row in sheet.iter_rows(values_only=True):
+                text.append('\t'.join(str(cell) if cell is not None else '' for cell in row))
+        else:  # xls format
+            for row in range(sheet.nrows):
+                text.append('\t'.join(str(cell.value) if cell.value is not None else '' for cell in sheet.row(row)))
         return '\n'.join(text)
 
     def extract_text_from_image(self, image: Image) -> str:
         return pytesseract.image_to_string(image)
 
-    def process_sheet(self, sheet: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str) -> SheetContent:
-        cell_text = self.extract_text_from_sheet(sheet)
+    def process_sheet(self, sheet, sheet_name: str, is_xlsx: bool) -> SheetContent:
+        cell_text = self.extract_text_from_sheet(sheet, is_xlsx)
         
-        image_loader = SheetImageLoader(sheet)
         images = []
-        for image_coord in image_loader._images:
-            image = image_loader.get(image_coord)
-            image_text = self.extract_text_from_image(image)
-            images.append((image_coord, image_text))
+        if is_xlsx:
+            try:
+                if not sheet.parent._read_only:  # Check if the workbook is not in read-only mode
+                    image_loader = SheetImageLoader(sheet)
+                    for image_coord in image_loader._images:
+                        image = image_loader.get(image_coord)
+                        image_text = self.extract_text_from_image(image)
+                        images.append((image_coord, image_text))
+            except Exception as e:
+                logging.warning(f"Failed to extract images from sheet {sheet_name}. Error: {str(e)}")
         
         return SheetContent(sheet_name, cell_text, images)
 
-    def process_workbook(self, file_path: str) -> WorkbookContent:
+    def process_workbook(self, file_path: str) -> Optional[WorkbookContent]:
         filename = os.path.basename(file_path)
+        relative_path = os.path.relpath(file_path, self.directory_path)
         sheets = []
 
-        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-        for sheet_name in wb.sheetnames:
-            sheet = wb[sheet_name]
-            sheet_content = self.process_sheet(sheet, sheet_name)
-            sheets.append(sheet_content)
+        try:
+            if filename.endswith('.xlsx'):
+                # First, try to load the workbook in read-only mode
+                wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+                is_xlsx = True
+            elif filename.endswith('.xls'):
+                wb = xlrd.open_workbook(file_path)
+                is_xlsx = False
+            else:
+                raise ValueError("Unsupported file format")
+        except Exception as e:
+            if filename.endswith('.xlsx'):
+                logging.warning(f"Failed to load {filename} in read-only mode. Trying normal mode. Error: {str(e)}")
+                try:
+                    # If read-only mode fails, try normal mode
+                    wb = openpyxl.load_workbook(file_path, data_only=True)
+                except Exception as e:
+                    logging.error(f"Failed to load {filename}. Error: {str(e)}")
+                    return None
+            else:
+                logging.error(f"Failed to load {filename}. Error: {str(e)}")
+                return None
 
-        return WorkbookContent(filename, sheets)
+        if is_xlsx:
+            for sheet_name in wb.sheetnames:
+                try:
+                    sheet = wb[sheet_name]
+                    sheet_content = self.process_sheet(sheet, sheet_name, is_xlsx)
+                    sheets.append(sheet_content)
+                except Exception as e:
+                    logging.error(f"Failed to process sheet {sheet_name} in {filename}. Error: {str(e)}")
+            wb.close()
+        else:
+            for sheet_index in range(wb.nsheets):
+                try:
+                    sheet = wb.sheet_by_index(sheet_index)
+                    sheet_content = self.process_sheet(sheet, sheet.name, is_xlsx)
+                    sheets.append(sheet_content)
+                except Exception as e:
+                    logging.error(f"Failed to process sheet {sheet.name} in {filename}. Error: {str(e)}")
+
+        return WorkbookContent(filename, relative_path, sheets)
 
     def process_directory(self) -> List[WorkbookContent]:
         workbooks = []
-        excel_files = [f for f in os.listdir(self.directory_path) if f.endswith(('.xlsx', '.xls'))]
-        
+        excel_files = []
+
+        # Recursively search for Excel files
+        for root, _, files in os.walk(self.directory_path):
+            for file in files:
+                if file.endswith(('.xlsx', '.xls')) and not file.startswith('~$'):
+                    excel_files.append(os.path.join(root, file))
+
         with Progress() as progress:
             task = progress.add_task("[green]Processing Excel files...", total=len(excel_files))
             
-            for filename in excel_files:
-                file_path = os.path.join(self.directory_path, filename)
-                logging.info(f"Processing {filename}...")
+            for file_path in excel_files:
+                relative_path = os.path.relpath(file_path, self.directory_path)
+                logging.info(f"Processing {relative_path}...")
                 workbook_content = self.process_workbook(file_path)
-                workbooks.append(workbook_content)
+                if workbook_content:
+                    workbooks.append(workbook_content)
                 progress.update(task, advance=1)
         
         return workbooks
@@ -103,6 +158,7 @@ class ExcelExtractor:
                         content += f"{image_text}\n"
                     writer.add_document(
                         filename=workbook.filename,
+                        relative_path=workbook.relative_path,
                         sheet_name=sheet.name,
                         content=content
                     )
@@ -117,6 +173,7 @@ class ExcelExtractor:
             
             table = Table(title=f"Search Results for '{query_str}'")
             table.add_column("File", style="cyan")
+            table.add_column("Path", style="blue")
             table.add_column("Sheet", style="magenta")
             table.add_column("Score", justify="right", style="green")
             table.add_column("Highlights", style="yellow")
@@ -124,6 +181,7 @@ class ExcelExtractor:
             for result in results:
                 table.add_row(
                     result['filename'],
+                    result['relative_path'],
                     result['sheet_name'],
                     f"{result.score:.2f}",
                     result.highlights("content")
