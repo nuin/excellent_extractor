@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import click
-import pandas as pd
-from openpyxl import load_workbook
+import openpyxl
 from openpyxl_image_loader import SheetImageLoader
 import pytesseract
 from PIL import Image
@@ -39,13 +38,16 @@ class ExcelExtractor:
         )
         self.console = Console()
 
-    def extract_text_from_sheet(self, sheet: pd.DataFrame) -> str:
-        return sheet.to_string(index=False)
+    def extract_text_from_sheet(self, sheet: openpyxl.worksheet.worksheet.Worksheet) -> str:
+        text = []
+        for row in sheet.iter_rows(values_only=True):
+            text.append('\t'.join(str(cell) if cell is not None else '' for cell in row))
+        return '\n'.join(text)
 
     def extract_text_from_image(self, image: Image) -> str:
         return pytesseract.image_to_string(image)
 
-    def process_sheet(self, sheet, sheet_name: str) -> SheetContent:
+    def process_sheet(self, sheet: openpyxl.worksheet.worksheet.Worksheet, sheet_name: str) -> SheetContent:
         cell_text = self.extract_text_from_sheet(sheet)
         
         image_loader = SheetImageLoader(sheet)
@@ -61,10 +63,10 @@ class ExcelExtractor:
         filename = os.path.basename(file_path)
         sheets = []
 
-        xlsx = pd.ExcelFile(file_path)
-        for sheet_name in xlsx.sheet_names:
-            df = pd.read_excel(xlsx, sheet_name=sheet_name)
-            sheet_content = self.process_sheet(xlsx.book[sheet_name], sheet_name)
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            sheet_content = self.process_sheet(sheet, sheet_name)
             sheets.append(sheet_content)
 
         return WorkbookContent(filename, sheets)
