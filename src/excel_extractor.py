@@ -165,11 +165,11 @@ class ExcelExtractor:
                     progress.update(task, advance=1)
             writer.commit()
 
-    def search(self, query_str: str, limit: int = 10):
+    def search(self, query_str: str, limit: int = None):
         ix = index.open_dir(self.index_dir)
         with ix.searcher() as searcher:
             query = QueryParser("content", ix.schema).parse(query_str)
-            results = searcher.search(query, limit=limit)
+            results = searcher.search(query, limit=limit)  # If limit is None, it will return all results
             
             table = Table(title=f"Search Results for '{query_str}'")
             table.add_column("File", style="cyan")
@@ -188,16 +188,13 @@ class ExcelExtractor:
                 )
             
             self.console.print(table)
+            self.console.print(f"\nTotal results: {len(results)}")
 
-@click.group(invoke_without_command=True)
-@click.option('--directory', type=click.Path(exists=True), help='Directory containing Excel files')
-@click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
+@click.group()
 @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO', help='Set the logging level')
 @click.pass_context
-def cli(ctx, directory, index_dir, log_level):
+def cli(ctx, log_level):
     ctx.ensure_object(dict)
-    ctx.obj['directory'] = directory
-    ctx.obj['index_dir'] = index_dir
     
     logging.basicConfig(
         level=log_level,
@@ -206,36 +203,30 @@ def cli(ctx, directory, index_dir, log_level):
         handlers=[RichHandler(rich_tracebacks=True)]
     )
 
-    if ctx.invoked_subcommand is None:
-        if directory is None:
-            console = Console()
-            console.print("[bold red]Error:[/bold red] --directory option is required when no command is specified.")
-            console.print("Please provide the directory containing Excel files using the --directory option.")
-            console.print("For more information, use the --help option.")
-            ctx.exit(1)
-        ctx.invoke(process)
-
 @cli.command()
+@click.option('--directory', type=click.Path(exists=True), required=True, help='Directory containing Excel files')
+@click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
 @click.pass_context
-def process(ctx):
+def process(ctx, directory, index_dir):
     """Process Excel files and create search index"""
-    if ctx.obj['directory'] is None:
-        click.echo("Error: --directory option is required for the process command.")
-        click.echo("Please provide the directory containing Excel files using the --directory option.")
-        ctx.exit(1)
-    
-    extractor = ExcelExtractor(ctx.obj['directory'], ctx.obj['index_dir'])
+    extractor = ExcelExtractor(directory, index_dir)
     workbooks = extractor.process_directory()
     extractor.index_content(workbooks)
-    click.echo("Processing and indexing completed.")
+    click.echo(f"Processing and indexing completed. Index stored in: {index_dir}")
 
 @cli.command()
 @click.argument('query')
-@click.option('--limit', default=10, help='Maximum number of results to display')
+@click.option('--index-dir', type=click.Path(exists=True), default='index_directory', help='Directory where the search index is stored')
+@click.option('--limit', default=None, type=int, help='Maximum number of results to display. If not specified, all results will be shown.')
 @click.pass_context
-def search(ctx, query, limit):
+def search(ctx, query, index_dir, limit):
     """Search indexed Excel content"""
-    extractor = ExcelExtractor(ctx.obj['directory'], ctx.obj['index_dir'])
+    if not os.path.exists(index_dir):
+        click.echo(f"Error: Index directory '{index_dir}' does not exist.")
+        click.echo("Please run the 'process' command first to create the index.")
+        ctx.exit(1)
+    
+    extractor = ExcelExtractor(None, index_dir)  # We don't need the directory for searching
     extractor.search(query, limit)
 
 if __name__ == "__main__":
