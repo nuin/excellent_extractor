@@ -3,14 +3,13 @@ import logging
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
-import click
 import openpyxl
 import xlrd
 from openpyxl_image_loader import SheetImageLoader
 import pytesseract
 from PIL import Image
 from whoosh import index
-from whoosh.fields import Schema, TEXT, ID
+from whoosh.fields import Schema, TEXT, ID, STORED
 from whoosh.qparser import QueryParser
 from rich.console import Console
 from rich.logging import RichHandler
@@ -37,7 +36,8 @@ class ExcelExtractor:
             filename=ID(stored=True),
             relative_path=ID(stored=True),
             sheet_name=ID(stored=True),
-            content=TEXT(stored=True)
+            content=TEXT(stored=True),
+            image_content=TEXT(stored=True)
         )
         self.console = Console()
 
@@ -153,49 +153,63 @@ class ExcelExtractor:
             writer = ix.writer()
             for workbook in workbooks:
                 for sheet in workbook.sheets:
-                    content = f"{sheet.cell_text}\n"
-                    for _, image_text in sheet.images:
-                        content += f"{image_text}\n"
+                    content = sheet.cell_text
+                    image_content = "\n".join(image_text for _, image_text in sheet.images)
                     writer.add_document(
                         filename=workbook.filename,
                         relative_path=workbook.relative_path,
                         sheet_name=sheet.name,
-                        content=content
+                        content=content,
+                        image_content=image_content
                     )
                     progress.update(task, advance=1)
             writer.commit()
 
-    def search(self, query_str: str, limit: int = None):
+    def search(self, query_str: str, limit: Optional[int] = None) -> List[dict]:
         ix = index.open_dir(self.index_dir)
         with ix.searcher() as searcher:
             query = QueryParser("content", ix.schema).parse(query_str)
-            results = searcher.search(query, limit=limit)  # If limit is None, it will return all results
-            
-            table = Table(title=f"Search Results for '{query_str}'")
-            table.add_column("File", style="cyan")
-            table.add_column("Path", style="blue")
-            table.add_column("Sheet", style="magenta")
-            table.add_column("Score", justify="right", style="green")
-            table.add_column("Highlights", style="yellow")
-            
-            for result in results:
-                table.add_row(
-                    result['filename'],
-                    result['relative_path'],
-                    result['sheet_name'],
-                    f"{result.score:.2f}",
-                    result.highlights("content")
-                )
-            
-            self.console.print(table)
-            self.console.print(f"\nTotal results: {len(results)}")
+            results = searcher.search(query, limit=limit)
+            return [
+                {
+                    "filename": r['filename'],
+                    "relative_path": r['relative_path'],
+                    "sheet_name": r['sheet_name'],
+                    "score": r.score,
+                    "highlight": r.highlights("content")
+                }
+                for r in results
+            ]
 
-@click.group()
-@click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO', help='Set the logging level')
-@click.pass_context
-def cli(ctx, log_level):
-    ctx.ensure_object(dict)
-    
+    def get_file_location(self, filename: str) -> Optional[dict]:
+        ix = index.open_dir(self.index_dir)
+        with ix.searcher() as searcher:
+            query = QueryParser("filename", ix.schema).parse(filename)
+            results = searcher.search(query, limit=1)
+            if results:
+                return {
+                    'filename': results[0]['filename'],
+                    'relative_path': results[0]['relative_path']
+                }
+        return None
+
+    def search_images(self, query_str: str) -> List[dict]:
+        ix = index.open_dir(self.index_dir)
+        with ix.searcher() as searcher:
+            query = QueryParser("image_content", ix.schema).parse(query_str)
+            results = searcher.search(query)
+            return [
+                {
+                    "filename": r['filename'],
+                    "relative_path": r['relative_path'],
+                    "sheet_name": r['sheet_name'],
+                    "score": r.score,
+                    "highlight": r.highlights("image_content")
+                }
+                for r in results
+            ]
+
+def setup_logging(log_level: str = 'INFO'):
     logging.basicConfig(
         level=log_level,
         format="%(message)s",
@@ -203,31 +217,38 @@ def cli(ctx, log_level):
         handlers=[RichHandler(rich_tracebacks=True)]
     )
 
-@cli.command()
-@click.option('--directory', type=click.Path(exists=True), required=True, help='Directory containing Excel files')
-@click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
-@click.pass_context
-def process(ctx, directory, index_dir):
-    """Process Excel files and create search index"""
-    extractor = ExcelExtractor(directory, index_dir)
-    workbooks = extractor.process_directory()
-    extractor.index_content(workbooks)
-    click.echo(f"Processing and indexing completed. Index stored in: {index_dir}")
-
-@cli.command()
-@click.argument('query')
-@click.option('--index-dir', type=click.Path(exists=True), default='index_directory', help='Directory where the search index is stored')
-@click.option('--limit', default=None, type=int, help='Maximum number of results to display. If not specified, all results will be shown.')
-@click.pass_context
-def search(ctx, query, index_dir, limit):
-    """Search indexed Excel content"""
-    if not os.path.exists(index_dir):
-        click.echo(f"Error: Index directory '{index_dir}' does not exist.")
-        click.echo("Please run the 'process' command first to create the index.")
-        ctx.exit(1)
-    
-    extractor = ExcelExtractor(None, index_dir)  # We don't need the directory for searching
-    extractor.search(query, limit)
-
 if __name__ == "__main__":
-    cli(obj={})
+    import click
+
+    @click.group()
+    @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO', help='Set the logging level')
+    def cli(log_level):
+        setup_logging(log_level)
+
+    @cli.command()
+    @click.option('--directory', type=click.Path(exists=True), required=True, help='Directory containing Excel files')
+    @click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
+    def process(directory, index_dir):
+        """Process Excel files and create search index"""
+        extractor = ExcelExtractor(directory, index_dir)
+        workbooks = extractor.process_directory()
+        extractor.index_content(workbooks)
+        click.echo(f"Processing and indexing completed. Index stored in: {index_dir}")
+
+    @cli.command()
+    @click.argument('query')
+    @click.option('--index-dir', type=click.Path(exists=True), default='index_directory', help='Directory where the search index is stored')
+    @click.option('--limit', default=None, type=int, help='Maximum number of results to display. If not specified, all results will be shown.')
+    def search(query, index_dir, limit):
+        """Search indexed Excel content"""
+        extractor = ExcelExtractor(None, index_dir)
+        results = extractor.search(query, limit)
+        for result in results:
+            click.echo(f"File: {result['filename']}")
+            click.echo(f"Path: {result['relative_path']}")
+            click.echo(f"Sheet: {result['sheet_name']}")
+            click.echo(f"Score: {result['score']:.2f}")
+            click.echo(f"Highlight: {result['highlight']}")
+            click.echo("---")
+
+    cli()
