@@ -1,6 +1,6 @@
 # Excel Extractor API Search Documentation for Genetic Data
 
-This document outlines all possible searches available through the Excel Extractor API, tailored for genetic data and gene variants. The API is implemented using GraphQL and provides three main query operations.
+This document outlines all possible searches available through the Excel Extractor API, tailored for genetic data and gene variants. The API is implemented using GraphQL and provides five main query operations.
 
 ## GraphQL Endpoint
 
@@ -85,6 +85,46 @@ query SearchImageContent($query: String!) {
   - `score`: Relevance score of the search result
   - `highlight`: Highlighted excerpt of the matching image content description
 
+### 4. Search by Filename
+
+This query allows you to search for Excel files by their filename, which can be useful for finding specific genetic datasets or study files.
+
+```graphql
+query SearchByFilename($filename: String!) {
+  searchByFilename(filename: $filename) {
+    filename
+    relativePath
+  }
+}
+```
+
+- **Parameters**:
+  - `filename` (String, required): Partial or full name of the Excel file to search for
+
+- **Returns**: A list of `FileLocation` objects containing:
+  - `filename`: Name of the Excel file
+  - `relativePath`: Relative path to the file
+
+### 5. Search by Gene Symbol
+
+This query allows you to search for all Excel files associated with a specific gene symbol, typically stored in a folder named after the gene.
+
+```graphql
+query SearchByGeneSymbol($geneSymbol: String!) {
+  searchByGeneSymbol(geneSymbol: $geneSymbol) {
+    filename
+    relativePath
+  }
+}
+```
+
+- **Parameters**:
+  - `geneSymbol` (String, required): The gene symbol to search for (e.g., "BRCA1", "TP53")
+
+- **Returns**: A list of `FileLocation` objects containing:
+  - `filename`: Name of the Excel file
+  - `relativePath`: Relative path to the file
+
 ## Example Usage
 
 Here are some example GraphQL queries you can use:
@@ -128,4 +168,26 @@ query {
 }
 ```
 
-Remember to replace the example values with your actual search terms or filenames when using these queries. These queries can help you efficiently search through Excel files containing genetic data, locate specific files, and find relevant images or diagrams related to genetic information.
+4. Search for Excel files with a specific name pattern:
+
+```graphql
+query {
+  searchByFilename(filename: "variant_analysis_2023") {
+    filename
+    relativePath
+  }
+}
+```
+
+5. Search for all Excel files related to a specific gene:
+
+```graphql
+query {
+  searchByGeneSymbol(geneSymbol: "BRCA2") {
+    filename
+    relativePath
+  }
+}
+```
+
+Remember to replace the example values with your actual search terms, filenames, or gene symbols when using these queries. These queries can help you efficiently search through Excel files containing genetic data, locate specific files, find relevant images or diagrams related to genetic information, and quickly access all files associated with a particular gene.
