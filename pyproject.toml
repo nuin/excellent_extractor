@@ -17,6 +17,9 @@ pillow = "^10.4.0"
 numpy = "^2.1.1"
 openpyxl-image-loader = "^1.0.5"
 xlrd = "^2.0.1"
+fastapi = "^0.114.2"
+uvicorn = "^0.30.6"
+strawberry-graphql = "^0.241.0"
 
 
 [build-system]
