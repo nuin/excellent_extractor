@@ -16,17 +16,20 @@ from rich.logging import RichHandler
 from rich.progress import Progress
 from rich.table import Table
 
+
 @dataclass
 class SheetContent:
     name: str
     cell_text: str
     images: List[Tuple[str, str]]  # (image_coord, image_text)
 
+
 @dataclass
 class WorkbookContent:
     filename: str
     relative_path: str
     sheets: List[SheetContent]
+
 
 class ExcelExtractor:
     def __init__(self, directory_path: str, index_dir: str):
@@ -56,7 +59,7 @@ class ExcelExtractor:
 
     def process_sheet(self, sheet, sheet_name: str, is_xlsx: bool) -> SheetContent:
         cell_text = self.extract_text_from_sheet(sheet, is_xlsx)
-        
+
         images = []
         if is_xlsx:
             try:
@@ -68,7 +71,7 @@ class ExcelExtractor:
                         images.append((image_coord, image_text))
             except Exception as e:
                 logging.warning(f"Failed to extract images from sheet {sheet_name}. Error: {str(e)}")
-        
+
         return SheetContent(sheet_name, cell_text, images)
 
     def process_workbook(self, file_path: str) -> Optional[WorkbookContent]:
@@ -131,7 +134,7 @@ class ExcelExtractor:
 
         with Progress() as progress:
             task = progress.add_task("[green]Processing Excel files...", total=len(excel_files))
-            
+
             for file_path in excel_files:
                 relative_path = os.path.relpath(file_path, self.directory_path)
                 logging.info(f"Processing {relative_path}...")
@@ -139,7 +142,7 @@ class ExcelExtractor:
                 if workbook_content:
                     workbooks.append(workbook_content)
                 progress.update(task, advance=1)
-        
+
         return workbooks
 
     def index_content(self, workbooks: List[WorkbookContent]):
@@ -149,7 +152,7 @@ class ExcelExtractor:
 
         with Progress() as progress:
             task = progress.add_task("[green]Indexing content...", total=sum(len(wb.sheets) for wb in workbooks))
-            
+
             writer = ix.writer()
             for workbook in workbooks:
                 for sheet in workbook.sheets:
@@ -209,6 +212,36 @@ class ExcelExtractor:
                 for r in results
             ]
 
+    def search_by_filename(self, filename: str) -> List[dict]:
+        ix = index.open_dir(self.index_dir)
+        with ix.searcher() as searcher:
+            query = QueryParser("filename", ix.schema).parse(f"*{filename}*")
+            results = searcher.search(query)
+            return [
+                {
+                    'filename': r['filename'],
+                    'relative_path': r['relative_path']
+                }
+                for r in results
+            ]
+
+    def search_by_gene_symbol(self, gene_symbol: str) -> List[dict]:
+        gene_folder = os.path.join(self.directory_path, gene_symbol)
+        if not os.path.exists(gene_folder):
+            return []
+
+        results = []
+        for root, _, files in os.walk(gene_folder):
+            for file in files:
+                if file.endswith(('.xlsx', '.xls')) and not file.startswith('~$'):
+                    relative_path = os.path.relpath(os.path.join(root, file), self.directory_path)
+                    results.append({
+                        'filename': file,
+                        'relative_path': relative_path
+                    })
+        return results
+
+
 def setup_logging(log_level: str = 'INFO'):
     logging.basicConfig(
         level=log_level,
@@ -217,17 +250,22 @@ def setup_logging(log_level: str = 'INFO'):
         handlers=[RichHandler(rich_tracebacks=True)]
     )
 
+
 if __name__ == "__main__":
     import click
 
+
     @click.group()
-    @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO', help='Set the logging level')
+    @click.option('--log-level', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), default='INFO',
+                  help='Set the logging level')
     def cli(log_level):
         setup_logging(log_level)
 
+
     @cli.command()
     @click.option('--directory', type=click.Path(exists=True), required=True, help='Directory containing Excel files')
-    @click.option('--index-dir', type=click.Path(), default='index_directory', help='Directory to store the search index')
+    @click.option('--index-dir', type=click.Path(), default='index_directory',
+                  help='Directory to store the search index')
     def process(directory, index_dir):
         """Process Excel files and create search index"""
         extractor = ExcelExtractor(directory, index_dir)
@@ -235,20 +273,9 @@ if __name__ == "__main__":
         extractor.index_content(workbooks)
         click.echo(f"Processing and indexing completed. Index stored in: {index_dir}")
 
+
     @cli.command()
     @click.argument('query')
-    @click.option('--index-dir', type=click.Path(exists=True), default='index_directory', help='Directory where the search index is stored')
-    @click.option('--limit', default=None, type=int, help='Maximum number of results to display. If not specified, all results will be shown.')
-    def search(query, index_dir, limit):
-        """Search indexed Excel content"""
-        extractor = ExcelExtractor(None, index_dir)
-        results = extractor.search(query, limit)
-        for result in results:
-            click.echo(f"File: {result['filename']}")
-            click.echo(f"Path: {result['relative_path']}")
-            click.echo(f"Sheet: {result['sheet_name']}")
-            click.echo(f"Score: {result['score']:.2f}")
-            click.echo(f"Highlight: {result['highlight']}")
-            click.echo("---")
-
-    cli()
+    @click.option('--index-dir', type=click.Path(exists=True), default='index_directory',
+                  help='Directory where the search index is stored')
+    @click.option('--limit', default=None, type=int,
